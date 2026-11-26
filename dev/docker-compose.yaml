@@ -1,0 +1,129 @@
+name: fiapx-dev
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-fiapx}
+      POSTGRES_USER: ${POSTGRES_USER:-fiapx}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fiapx}
+    command:
+      - postgres
+      - -c
+      - shared_buffers=64MB
+      - -c
+      - max_connections=50
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fiapx} -d ${POSTGRES_DB:-fiapx}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-fiapx}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-fiapx}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+      - ./rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--maxmemory", "32mb", "--maxmemory-policy", "allkeys-lru", "--save", ""]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    deploy:
+      resources:
+        limits:
+          memory: 96M
+
+  # Object storage compatível com S3 para desenvolvimento e teste.
+  # Duas trocas forçadas por eventos externos, ambas medidas em 2026-11-26:
+  #   MinIO     -> fechou o acesso anônimo às imagens no Docker Hub E no quay.io
+  #   LocalStack -> :latest virou edição licenciada, sai com código 55 sem auth token
+  # Os buckets nascem da variável initialBuckets: não há passo de inicialização.
+  s3:
+    image: adobe/s3mock:latest
+    environment:
+      root: /data
+      retainFilesOnExit: "true"
+    ports:
+      - "9090:9090"
+    volumes:
+      - s3_data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+
+  # A variável initialBuckets do S3Mock não criou os buckets nesta imagem (medido em
+  # 2026-11-26: `s3 ls` vazio e PutObject com NoSuchBucket). Criar pelo CLI é melhor de
+  # qualquer forma: é exatamente o mesmo comando que roda contra o S3 de verdade.
+  s3-init:
+    image: amazon/aws-cli:latest
+    depends_on:
+      - s3
+    environment:
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
+      AWS_DEFAULT_REGION: ${AWS_REGION:-us-east-1}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        i=0
+        until aws --endpoint-url http://s3:9090 s3 ls >/dev/null 2>&1; do
+          i=$$((i+1))
+          [ $$i -gt 60 ] && { echo "s3 nao respondeu em 60s"; exit 1; }
+          sleep 1
+        done
+        for b in fiapx-videos fiapx-zips; do
+          aws --endpoint-url http://s3:9090 s3 mb "s3://$$b" 2>/dev/null || true
+        done
+        echo "buckets:"
+        aws --endpoint-url http://s3:9090 s3 ls
+    restart: "no"
+
+  mailpit:
+    image: axllent/mailpit:latest
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+
+volumes:
+  postgres_data:
+  rabbitmq_data:
+  s3_data:
