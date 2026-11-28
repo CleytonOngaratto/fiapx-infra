@@ -13,8 +13,11 @@ services:
       - shared_buffers=64MB
       - -c
       - max_connections=50
+    # 5433 no host de propósito: esta máquina tem um PostgreSQL 16 local como serviço
+    # automático na 5432. Sem isso há disputa pela porta, e o pior caso não é falhar ao
+    # subir — é a aplicação conectar no banco errado em silêncio.
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -70,45 +73,25 @@ services:
   # Os buckets nascem da variável initialBuckets: não há passo de inicialização.
   s3:
     image: adobe/s3mock:latest
+    # Os nomes são estes, e o container aceita qualquer outro em silêncio: `root` e
+    # `ROOT` chegaram ao container e foram ignorados, com o log caindo em
+    # `configured as "<default temp-dir>"` (medido em 2026-11-28).
+    # O volume tem de ser montado em /s3mockroot: o caminho é pré-criado na imagem e
+    # pertence ao usuário não-root `cnb`, então um volume em outro lugar nasce do root e
+    # o processo não consegue escrever.
     environment:
-      root: /data
-      retainFilesOnExit: "true"
+      COM_ADOBE_TESTING_S3MOCK_STORE_ROOT: /s3mockroot
+      COM_ADOBE_TESTING_S3MOCK_STORE_RETAIN_FILES_ON_EXIT: "true"
+      COM_ADOBE_TESTING_S3MOCK_STORE_INITIAL_BUCKETS: fiapx-videos,fiapx-zips
+      COM_ADOBE_TESTING_S3MOCK_STORE_REGION: ${AWS_REGION:-us-east-1}
     ports:
       - "9090:9090"
     volumes:
-      - s3_data:/data
+      - s3_data:/s3mockroot
     deploy:
       resources:
         limits:
           memory: 384M
-
-  # A variável initialBuckets do S3Mock não criou os buckets nesta imagem (medido em
-  # 2026-11-26: `s3 ls` vazio e PutObject com NoSuchBucket). Criar pelo CLI é melhor de
-  # qualquer forma: é exatamente o mesmo comando que roda contra o S3 de verdade.
-  s3-init:
-    image: amazon/aws-cli:latest
-    depends_on:
-      - s3
-    environment:
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
-      AWS_DEFAULT_REGION: ${AWS_REGION:-us-east-1}
-    entrypoint:
-      - /bin/sh
-      - -c
-      - |
-        i=0
-        until aws --endpoint-url http://s3:9090 s3 ls >/dev/null 2>&1; do
-          i=$$((i+1))
-          [ $$i -gt 60 ] && { echo "s3 nao respondeu em 60s"; exit 1; }
-          sleep 1
-        done
-        for b in fiapx-videos fiapx-zips; do
-          aws --endpoint-url http://s3:9090 s3 mb "s3://$$b" 2>/dev/null || true
-        done
-        echo "buckets:"
-        aws --endpoint-url http://s3:9090 s3 ls
-    restart: "no"
 
   mailpit:
     image: axllent/mailpit:latest

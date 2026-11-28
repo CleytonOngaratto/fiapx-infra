@@ -14,7 +14,7 @@ vida*: aqui tudo é **aplicado**, não construído.
 
 | Serviço | Porta | Para que serve | Limite | Medido ocioso |
 |---|---|---|---|---|
-| **PostgreSQL** 17 | `5432` | estado autoritativo: usuários, vídeos, outbox, inbox | 256 MB | 29 MB |
+| **PostgreSQL** 17 | **`5433`** | estado autoritativo: usuários, vídeos, outbox, inbox | 256 MB | 29 MB |
 | **RabbitMQ** 4 + management | `5672` · UI `15672` | fila de processamento, retry e DLQ | 512 MB | 98 MB |
 | **Redis** 7 | `6379` | progresso do processamento (efêmero, *best-effort*) | 96 MB | 3 MB |
 | **S3Mock** | `9090` | object storage compatível com S3: vídeos e zips | 384 MB | 186 MB |
@@ -29,8 +29,8 @@ docker compose up -d
 docker compose ps
 ```
 
-O serviço `s3-init` é one-shot: espera o S3 responder, cria os buckets `fiapx-videos` e `fiapx-zips`
-pelo **AWS CLI** e sai com código 0. São os mesmos comandos que rodariam contra o S3 de verdade.
+Os buckets `fiapx-videos` e `fiapx-zips` nascem no startup do próprio S3Mock, por
+`COM_ADOBE_TESTING_S3MOCK_STORE_INITIAL_BUCKETS`. Não há passo de inicialização.
 
 ### Derrubar
 
@@ -73,6 +73,39 @@ qualquer origem por padrão. **O S3 de verdade nega** sem uma regra de CORS no b
 ambiente local **não é capaz de pegar** um CORS mal configurado. Na AWS a regra é explícita, via
 `aws_s3_bucket_cors_configuration` no Terraform, com `ExposeHeaders: ["ETag"]` — sem o ETag exposto o
 navegador não consegue confirmar o upload.
+
+### S3Mock: os nomes das variáveis são `COM_ADOBE_TESTING_S3MOCK_STORE_*`
+
+E o container **aceita qualquer outro nome em silêncio**. Medido em 2026-11-28: com `root=/data` e,
+depois, `ROOT=/data`, as variáveis chegaram ao container (confirmado por `docker inspect`) e foram
+ignoradas — o log caía em `configured as "<default temp-dir>"`, os objetos morriam a cada restart e
+`initialBuckets` não criava nada. Nenhum erro, em nenhum dos dois casos.
+
+Duas regras que vêm da documentação, não de tentativa:
+
+- **O volume vai em `/s3mockroot`**, não num caminho qualquer: esse diretório é pré-criado na imagem e
+  pertence ao usuário não-root `cnb` que o processo usa. Um volume montado noutro lugar nasce do
+  `root` e o S3Mock não consegue escrever nele.
+- **O root resolvido é sempre logado no startup** — é a forma de conferir que pegou:
+
+```bash
+docker compose logs s3 | grep "root folder"
+# Using "/s3mockroot" (configured as "/s3mockroot") as root folder. Will retain files on exit: true
+```
+
+Se aparecer `<default temp-dir>`, a configuração não pegou e os dados somem no próximo restart.
+
+### PostgreSQL publica em 5433, não em 5432
+
+Esta máquina tem um **PostgreSQL 16 instalado como serviço automático** ocupando a 5432. Se o
+container disputasse a mesma porta, o resultado dependeria de quem subisse primeiro — e o pior caso
+**não** é o container falhar: é a aplicação conectar no banco errado, com o schema errado, em
+silêncio. Publicar em 5433 elimina a disputa sem mexer no serviço da máquina.
+
+```bash
+# conferir quem está em cada porta
+Get-NetTCPConnection -LocalPort 5432,5433 -State Listen
+```
 
 ### RabbitMQ: watermark absoluto, e em arquivo
 
