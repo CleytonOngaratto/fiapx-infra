@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Sem `paths`: check obrigatório filtrado por path fica "Pending" para sempre quando o
+# filtro não casa, e trava o merge sem nada a fazer.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Pega erro de sintaxe, variável mal interpolada e serviço mal declarado antes do
+      # merge. Não sobe nada: resolver o arquivo já é o que falha quando está errado.
+      - name: Validate compose file
+        run: docker compose -f dev/docker-compose.yaml config --quiet
+
+      - name: Show resolved services
+        run: docker compose -f dev/docker-compose.yaml config --services
