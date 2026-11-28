@@ -1,0 +1,82 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: s3-data
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 4Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: s3
+  labels:
+    app: s3
+spec:
+  replicas: 1
+  strategy:
+    # O PVC é ReadWriteOnce: com RollingUpdate o pod novo fica Pending esperando o volume
+    # que o antigo ainda segura.
+    type: Recreate
+  selector:
+    matchLabels:
+      app: s3
+  template:
+    metadata:
+      labels:
+        app: s3
+    spec:
+      containers:
+        - name: s3mock
+          image: adobe/s3mock:latest
+          ports:
+            - name: http
+              containerPort: 9090
+          env:
+            # Os nomes são estes; o S3Mock ignora qualquer outro em silêncio e cai num
+            # diretório temporário. O volume tem de ir em /s3mockroot, que é pré-criado
+            # na imagem e pertence ao usuário não-root que o processo usa.
+            - name: COM_ADOBE_TESTING_S3MOCK_STORE_ROOT
+              value: /s3mockroot
+            - name: COM_ADOBE_TESTING_S3MOCK_STORE_RETAIN_FILES_ON_EXIT
+              value: "true"
+            - name: COM_ADOBE_TESTING_S3MOCK_STORE_INITIAL_BUCKETS
+              value: fiapx-videos,fiapx-zips
+            - name: COM_ADOBE_TESTING_S3MOCK_STORE_REGION
+              value: us-east-1
+          volumeMounts:
+            - name: data
+              mountPath: /s3mockroot
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 384Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: s3-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: s3
+  labels:
+    app: s3
+spec:
+  type: ClusterIP
+  selector:
+    app: s3
+  ports:
+    - name: http
+      port: 9090
+      targetPort: http
