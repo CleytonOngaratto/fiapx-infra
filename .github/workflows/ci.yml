@@ -26,10 +26,14 @@ jobs:
       - name: Show resolved services
         run: docker compose -f dev/docker-compose.yaml config --services
 
-      # --dry-run=client valida a sintaxe e o schema sem precisar de cluster.
+      # kubeconform e não `kubectl --dry-run=client`: o dry-run do kubectl ainda contacta o
+      # API server para resolver os kinds, então falha sem cluster. O kubeconform valida
+      # contra os schemas, offline.
       - name: Validate kubernetes manifests
+        env:
+          KUBECONFORM_VERSION: v0.8.0
         run: |
-          for f in k8s/*.yaml; do
-            echo "== $f"
-            kubectl apply --dry-run=client --validate=false -f "$f"
-          done
+          curl -sSfL -o /tmp/kubeconform.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          tar -xzf /tmp/kubeconform.tar.gz -C /tmp kubeconform
+          /tmp/kubeconform -strict -summary k8s/
